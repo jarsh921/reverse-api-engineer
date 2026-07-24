@@ -149,6 +149,14 @@ class TestLoadLanguagePartial:
         assert "cJSON_Delete" in text
         assert "STATUS_HEAP_CORRUPTION" in text
         assert "cJSON_DetachItemFromObject" in text
+        # Anchored to the actual prohibition and consequence wording, not
+        # just incidental mentions of the three terms above — a future edit
+        # that quietly dropped the real warning while still name-dropping
+        # cJSON_Delete/STATUS_HEAP_CORRUPTION/cJSON_DetachItemFromObject
+        # elsewhere in the partial would still pass the three bare `in`
+        # checks above; these phrases are unique to the warning itself.
+        assert "never delete individual fields you pulled out of it" in text
+        assert "double-frees an already-freed pointer" in text
 
 
 class TestEngineerTemplates:
