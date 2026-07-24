@@ -132,6 +132,24 @@ class TestLoadLanguagePartial:
         assert "libcurl" in text
         assert "/tmp/scripts/api_client.c" in text
 
+    def test_c_partial_warns_about_cjson_child_delete_double_free(self):
+        """Confirmed live: job dce90858fe54 / run 32c6d8533cb2
+        (httpbingo.org) generated a client that called cJSON_Delete on two
+        sibling fields (args, headers) pulled from the same parsed object —
+        cJSON_Delete walks and frees a node's siblings too, so the second
+        call double-freed an already-freed pointer, reliably producing
+        STATUS_HEAP_CORRUPTION on Windows. This guidance is what should
+        prevent that pattern from being generated again."""
+        text = load_language_partial(
+            "c",
+            scripts_dir="/tmp/scripts",
+            client_filename="api_client.c",
+            run_command="cc ...",
+        )
+        assert "cJSON_Delete" in text
+        assert "STATUS_HEAP_CORRUPTION" in text
+        assert "cJSON_DetachItemFromObject" in text
+
 
 class TestEngineerTemplates:
     """Test engineer system/user templates."""
