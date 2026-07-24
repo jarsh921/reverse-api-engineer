@@ -31,6 +31,28 @@ logging.getLogger("claude_agent_sdk._internal.transport.subprocess_cli").setLeve
 _LOCAL_VERIFY_MCP_SERVER_NAME = "local_verify"
 _RUN_ON_USERS_MACHINE_TOOL_NAME = "run_on_users_machine"
 
+# Sidecar files the local agent's own run command depends on, alongside the
+# main client file — mirrors BaseEngineer._get_run_command()'s per-language
+# knowledge of what has to exist on disk to actually run a client (Maven
+# needs pom.xml, dotnet needs the .csproj, C needs its vendored cJSON pair)
+# and _get_auto_output_files()'s per-language sidecar list, but as a
+# machine-readable table rather than prose for a prompt. "Required": local
+# verification can't be attempted at all without these — the local agent's
+# own fixed run command hard-depends on them. "Optional": included only if
+# reverse-api-engineer actually wrote them (package.json/go.mod only exist
+# when the client needed external dependencies) — their absence isn't an
+# error, the run command works without them either way.
+_LOCAL_VERIFY_REQUIRED_SIDECARS: dict[str, tuple[str, ...]] = {
+    "java": ("pom.xml",),
+    "csharp": ("ApiClient.csproj",),
+    "c": ("cJSON.c", "cJSON.h"),
+}
+_LOCAL_VERIFY_OPTIONAL_SIDECARS: dict[str, tuple[str, ...]] = {
+    "javascript": ("package.json",),
+    "typescript": ("package.json",),
+    "go": ("go.mod", "go.sum"),
+}
+
 
 class ClaudeEngineer(BaseEngineer):
     """Uses Claude Agent SDK to analyze HAR files and generate Python API scripts."""
@@ -74,12 +96,38 @@ class ClaudeEngineer(BaseEngineer):
             return base + RUN_ON_USERS_MACHINE_INSTRUCTION
         return base
 
+    def _gather_local_verify_files(self) -> dict[str, str] | str:
+        """Gathers the client file plus every sidecar its run command needs,
+        fresh off disk. Returns `{relative_filename: content}` on success, or
+        a plain error string (missing entrypoint or a missing *required*
+        sidecar) for the caller to surface as a tool error.
+        """
+        client_filename = self._get_client_filename()
+        client_path = self.scripts_dir / client_filename
+        if not client_path.exists():
+            return f"No {client_filename} exists yet at {client_path} — write it first, then call this tool."
+
+        required = _LOCAL_VERIFY_REQUIRED_SIDECARS.get(self.output_language, ())
+        missing = [name for name in required if not (self.scripts_dir / name).exists()]
+        if missing:
+            return (
+                f"Missing required file(s) for {self.output_language}: {', '.join(missing)} "
+                f"(expected alongside {client_filename} in {self.scripts_dir}) — write them first, then call this tool."
+            )
+
+        files = {client_filename: client_path.read_text(encoding="utf-8", errors="replace")}
+        optional = _LOCAL_VERIFY_OPTIONAL_SIDECARS.get(self.output_language, ())
+        for name in (*required, *optional):
+            path = self.scripts_dir / name
+            if path.exists():
+                files[name] = path.read_text(encoding="utf-8", errors="replace")
+        return files
+
     def _build_local_exec_tool(self):
         """Builds the `run_on_users_machine` SDK tool for this run's
-        local_verify config. Each call gathers the client file fresh off
-        disk (Phase 1: a single file, Python-only — see the
-        local-verification-agent plan for the multi-file generalization
-        planned for later languages), dispatches it to route-reveal's
+        local_verify config. Each call gathers the client file plus its
+        required/optional sidecars fresh off disk (see
+        _gather_local_verify_files), dispatches them to route-reveal's
         job-scoped internal-callback endpoints, and polls for a result.
 
         Deliberately no dedup/once-only guard, unlike report_client_verified
@@ -98,18 +146,9 @@ class ClaudeEngineer(BaseEngineer):
         )
         async def run_on_users_machine(args: dict[str, Any]) -> dict[str, Any]:
             client_filename = self._get_client_filename()
-            client_path = self.scripts_dir / client_filename
-            if not client_path.exists():
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"No {client_filename} exists yet at {client_path} — write it first, then call this tool.",
-                        }
-                    ],
-                    "is_error": True,
-                }
-            files = {client_filename: client_path.read_text(encoding="utf-8", errors="replace")}
+            files = self._gather_local_verify_files()
+            if isinstance(files, str):
+                return {"content": [{"type": "text", "text": files}], "is_error": True}
             headers = {"Authorization": f"Bearer {config.callback_token}"}
 
             try:

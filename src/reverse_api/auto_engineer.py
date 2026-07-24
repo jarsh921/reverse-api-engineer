@@ -22,7 +22,7 @@ from .agent_browser import (
     ensure_agent_browser_runtime,
     print_agent_browser_setup_notices,
 )
-from .engineer import ClaudeEngineer
+from .engineer import _LOCAL_VERIFY_MCP_SERVER_NAME, _RUN_ON_USERS_MACHINE_TOOL_NAME, ClaudeEngineer
 from .opencode_engineer import OpenCodeEngineer, debug_log, format_error
 from .utils import build_sdk_env, get_har_dir
 
@@ -208,10 +208,21 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         self.message_store.save_prompt(user_message)
 
         if self.agent_provider == "agent-browser":
+            allowed_tools = allowed_tools_agent_browser_agent_mode()
+            mcp_servers: dict[str, Any] = {}
+            if self.local_verify is not None:
+                # This branch uses an explicit allowlist (unlike the
+                # mcp_servers-only branch below) — registering the server
+                # alone isn't enough, the tool name must also be allowed.
+                mcp_servers[_LOCAL_VERIFY_MCP_SERVER_NAME] = self._build_local_exec_mcp_server()
+                allowed_tools = [
+                    *allowed_tools,
+                    f"mcp__{_LOCAL_VERIFY_MCP_SERVER_NAME}__{_RUN_ON_USERS_MACHINE_TOOL_NAME}",
+                ]
             options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
-                mcp_servers={},
-                allowed_tools=allowed_tools_agent_browser_agent_mode(),
+                mcp_servers=mcp_servers,
+                allowed_tools=allowed_tools,
                 permission_mode="bypassPermissions",
                 can_use_tool=self._handle_tool_permission,
                 cwd=str(self.scripts_dir.parent.parent),
@@ -221,9 +232,12 @@ class ClaudeAutoEngineer(ClaudeEngineer):
             )
         else:
             mcp_name, mcp_config = self._get_mcp_config()
+            mcp_servers = {mcp_name: mcp_config}
+            if self.local_verify is not None:
+                mcp_servers[_LOCAL_VERIFY_MCP_SERVER_NAME] = self._build_local_exec_mcp_server()
             options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
-                mcp_servers={mcp_name: mcp_config},
+                mcp_servers=mcp_servers,
                 permission_mode="bypassPermissions",
                 can_use_tool=self._handle_tool_permission,
                 cwd=str(self.scripts_dir.parent.parent),

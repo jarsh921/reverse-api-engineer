@@ -198,6 +198,100 @@ class TestRunOnUsersMachineTool:
         assert post.call_count == 2
 
 
+class TestGatherLocalVerifyFiles:
+    """_gather_local_verify_files — the per-language sidecar file logic
+    added in Phase 2. Python has no sidecars at all, so its own coverage
+    lives in TestRunOnUsersMachineTool above; this focuses on the languages
+    that actually have required/optional sidecar files."""
+
+    def test_missing_entrypoint_returns_an_error_string(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="java")
+        result = eng._gather_local_verify_files()
+        assert isinstance(result, str)
+        assert "write it first" in result
+
+    def test_java_requires_pom_xml(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="java")
+        (eng.scripts_dir / eng._get_client_filename()).write_text("public class ApiClient {}")
+
+        result = eng._gather_local_verify_files()
+        assert isinstance(result, str)
+        assert "pom.xml" in result
+
+    def test_java_gathers_client_and_pom_when_both_present(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="java")
+        client_filename = eng._get_client_filename()
+        (eng.scripts_dir / client_filename).write_text("public class ApiClient {}")
+        (eng.scripts_dir / "pom.xml").write_text("<project></project>")
+
+        files = eng._gather_local_verify_files()
+        assert files == {client_filename: "public class ApiClient {}", "pom.xml": "<project></project>"}
+
+    def test_csharp_requires_csproj(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="csharp")
+        (eng.scripts_dir / eng._get_client_filename()).write_text("class ApiClient {}")
+
+        result = eng._gather_local_verify_files()
+        assert isinstance(result, str)
+        assert "ApiClient.csproj" in result
+
+    def test_c_requires_both_cjson_files(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="c")
+        (eng.scripts_dir / eng._get_client_filename()).write_text("int main() { return 0; }")
+        (eng.scripts_dir / "cJSON.c").write_text("/* cjson */")
+        # cJSON.h still missing
+
+        result = eng._gather_local_verify_files()
+        assert isinstance(result, str)
+        assert "cJSON.h" in result
+
+    def test_c_gathers_all_three_files_when_present(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="c")
+        client_filename = eng._get_client_filename()
+        (eng.scripts_dir / client_filename).write_text("int main() { return 0; }")
+        (eng.scripts_dir / "cJSON.c").write_text("/* c */")
+        (eng.scripts_dir / "cJSON.h").write_text("/* h */")
+
+        files = eng._gather_local_verify_files()
+        assert set(files.keys()) == {client_filename, "cJSON.c", "cJSON.h"}
+
+    def test_javascript_package_json_is_optional_not_an_error(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="javascript")
+        client_filename = eng._get_client_filename()
+        (eng.scripts_dir / client_filename).write_text("console.log('hi')")
+        # no package.json written — should NOT be treated as missing-required
+
+        files = eng._gather_local_verify_files()
+        assert files == {client_filename: "console.log('hi')"}
+
+    def test_javascript_package_json_included_when_present(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="javascript")
+        client_filename = eng._get_client_filename()
+        (eng.scripts_dir / client_filename).write_text("console.log('hi')")
+        (eng.scripts_dir / "package.json").write_text("{}")
+
+        files = eng._gather_local_verify_files()
+        assert files == {client_filename: "console.log('hi')", "package.json": "{}"}
+
+    def test_go_gathers_both_optional_files_when_present(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="go")
+        client_filename = eng._get_client_filename()
+        (eng.scripts_dir / client_filename).write_text("package main")
+        (eng.scripts_dir / "go.mod").write_text("module x")
+        (eng.scripts_dir / "go.sum").write_text("")
+
+        files = eng._gather_local_verify_files()
+        assert set(files.keys()) == {client_filename, "go.mod", "go.sum"}
+
+    def test_python_has_no_sidecars(self, tmp_path):
+        eng = _make_engineer(tmp_path, local_verify=_config(), output_language="python")
+        client_filename = eng._get_client_filename()
+        (eng.scripts_dir / client_filename).write_text("print('hi')")
+
+        files = eng._gather_local_verify_files()
+        assert files == {client_filename: "print('hi')"}
+
+
 class TestAnalyzeAndGenerateRegistersLocalVerifyServer:
     @pytest.mark.asyncio
     async def test_mcp_servers_includes_local_verify_when_configured(self, tmp_path):
