@@ -57,16 +57,20 @@ class LocalVerifyConfig:
     `wait_timeout_seconds` bounds how long one `run_on_users_machine` tool
     call waits for a result before telling the LLM the paired machine
     didn't respond in time — deliberately larger than a single command's
-    own execution ceiling (the paired local agent's own ~60s hard timeout),
-    so this also has room to cover however long the agent takes to notice
-    and claim the command, not just run it.
+    own execution ceiling (`command_timeout_seconds`), so this also has room
+    to cover however long the agent takes to notice and claim the command,
+    not just run it. `command_timeout_seconds` defaults generously enough to
+    cover a compiled language's cold start (confirmed live: a first `dotnet
+    run` on a totally fresh scratch dir with no warm NuGet cache took real,
+    non-trivial time even for a trivial single-endpoint client) — an
+    interpreted language finishes in a fraction of this either way.
     """
 
     callback_url: str
     callback_token: str
     poll_interval_seconds: float = 2.0
-    wait_timeout_seconds: float = 90.0
-    command_timeout_seconds: float = 60.0
+    wait_timeout_seconds: float = 150.0
+    command_timeout_seconds: float = 120.0
 
 
 RUN_ON_USERS_MACHINE_INSTRUCTION = (
