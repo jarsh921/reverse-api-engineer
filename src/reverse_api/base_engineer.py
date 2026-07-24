@@ -70,13 +70,17 @@ class LocalVerifyConfig:
 
 
 RUN_ON_USERS_MACHINE_INSTRUCTION = (
-    "\n\n**Local verification available.** The target for this run is only reachable from "
-    "the user's own machine — this session's own Bash cannot reach it, so use it as your "
-    "test/verification step instead: the `run_on_users_machine` tool sends your current "
-    "client code to the user's paired machine, runs it there for real, and returns its "
-    "stdout/stderr/exit code. Unlike a one-shot verification report, you can call this tool "
-    "as many times as you need while iterating — write, verify, find a bug, fix it, verify "
-    "again — the same way you'd normally use Bash to test a client you can actually reach."
+    "\n\n**Local verification available.** The target for this run is meant to be reachable "
+    "only from the user's own machine, not from this session — use the `run_on_users_machine` "
+    "tool as your test/verification step instead of Bash/curl: it sends your current client "
+    "code to the user's paired machine, runs it there for real, and returns its stdout/stderr/"
+    "exit code. **Always use this tool for verification here, never Bash/curl against the "
+    "target — even if a direct request from this session happens to succeed.** A response you "
+    "got yourself doesn't prove the user's own machine (the one that actually matters) can run "
+    "the client; only a real run_on_users_machine result does. Unlike a one-shot verification "
+    "report, you can call this tool as many times as you need while iterating — write, verify, "
+    "find a bug, fix it, verify again — the same way you'd normally use Bash to test a client "
+    "you can actually reach."
 )
 
 
