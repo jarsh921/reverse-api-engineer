@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,50 @@ NON_INTERACTIVE_ASK_USER_MESSAGE = (
 )
 
 
+@dataclass
+class LocalVerifyConfig:
+    """Relays live verification to a machine the caller controls (e.g.
+    route-reveal's paired local-agent feature) instead of — or in addition
+    to — whatever this session can reach itself. Exists for targets no
+    server-side sandbox can reach at all: an internal/VPN-gated API, a
+    `localhost` service, anything only reachable from one specific machine.
+
+    `callback_url` is a *job-scoped* base URL (no trailing slash) the
+    ClaudeEngineer tool built from this config POSTs `/commands` to and
+    polls `/commands/{id}` under — the caller mints one per run, scoped to
+    exactly this job, never a shared/global endpoint. `callback_token`
+    authenticates against that same scope; both travel to the CLI
+    subprocess via the `RAE_VERIFY_CALLBACK_URL`/`RAE_VERIFY_CALLBACK_TOKEN`
+    env vars (see cli.py) rather than as flags, matching this project's
+    existing `ANTHROPIC_API_KEY`-style handling of secrets that shouldn't
+    show up in `ps` output or shell history.
+
+    `wait_timeout_seconds` bounds how long one `run_on_users_machine` tool
+    call waits for a result before telling the LLM the paired machine
+    didn't respond in time — deliberately larger than a single command's
+    own execution ceiling (the paired local agent's own ~60s hard timeout),
+    so this also has room to cover however long the agent takes to notice
+    and claim the command, not just run it.
+    """
+
+    callback_url: str
+    callback_token: str
+    poll_interval_seconds: float = 2.0
+    wait_timeout_seconds: float = 90.0
+    command_timeout_seconds: float = 60.0
+
+
+RUN_ON_USERS_MACHINE_INSTRUCTION = (
+    "\n\n**Local verification available.** The target for this run is only reachable from "
+    "the user's own machine — this session's own Bash cannot reach it, so use it as your "
+    "test/verification step instead: the `run_on_users_machine` tool sends your current "
+    "client code to the user's paired machine, runs it there for real, and returns its "
+    "stdout/stderr/exit code. Unlike a one-shot verification report, you can call this tool "
+    "as many times as you need while iterating — write, verify, find a bug, fix it, verify "
+    "again — the same way you'd normally use Bash to test a client you can actually reach."
+)
+
+
 class BaseEngineer(ABC):
     """Abstract base class for API reverse engineering implementations."""
 
@@ -57,6 +102,7 @@ class BaseEngineer(ABC):
         output_language: str = "python",
         output_mode: str = "client",
         interactive: bool = True,
+        local_verify: LocalVerifyConfig | None = None,
     ):
         self.run_id = run_id
         self.har_path = har_path
@@ -64,6 +110,10 @@ class BaseEngineer(ABC):
         self.model = model
         self.additional_instructions = additional_instructions
         self.output_mode = output_mode
+        # None (default) means zero behavior change — no new tool, no new
+        # prompt text. Only ClaudeEngineer currently does anything with this
+        # (see engineer.py) — every other SDK backend ignores it for now.
+        self.local_verify = local_verify
 
         # Select output directory based on mode
         if output_mode == "docs":

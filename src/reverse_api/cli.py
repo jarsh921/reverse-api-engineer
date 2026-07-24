@@ -2371,6 +2371,26 @@ def engineer(run_id, prompt, fresh, model, output_dir, no_interactive, as_json, 
     sys.exit(0 if payload["status"] == "ok" else 1)
 
 
+def _local_verify_config_from_env():
+    """Builds a LocalVerifyConfig from RAE_VERIFY_CALLBACK_URL/
+    RAE_VERIFY_CALLBACK_TOKEN — env vars, not flags, matching this CLI's
+    existing ANTHROPIC_API_KEY-style handling of secrets that shouldn't
+    appear in `ps` output or shell history (route-reveal, the caller that
+    actually sets these, spawns this CLI as a subprocess per job and passes
+    them via an explicit env= dict — see its rae.py). None (the default, and
+    what every invocation not wired up for local verification gets) means
+    the `run_on_users_machine` tool never gets registered at all — see
+    ClaudeEngineer.analyze_and_generate.
+    """
+    url = os.environ.get("RAE_VERIFY_CALLBACK_URL")
+    token = os.environ.get("RAE_VERIFY_CALLBACK_TOKEN")
+    if not url or not token:
+        return None
+    from .base_engineer import LocalVerifyConfig
+
+    return LocalVerifyConfig(callback_url=url, callback_token=token)
+
+
 def run_engineer(
     run_id,
     har_path=None,
@@ -2480,6 +2500,7 @@ def run_engineer(
             output_mode=output_mode,
             interactive=interactive,
             json_event_sink=json_event_sink,
+            local_verify=_local_verify_config_from_env(),
         )
 
     if result:

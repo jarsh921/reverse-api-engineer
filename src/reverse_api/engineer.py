@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
+import requests
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -15,14 +17,19 @@ from claude_agent_sdk import (
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
+    create_sdk_mcp_server,
+    tool,
 )
 
-from .base_engineer import BaseEngineer
+from .base_engineer import RUN_ON_USERS_MACHINE_INSTRUCTION, BaseEngineer, LocalVerifyConfig
 from .utils import build_sdk_env, is_context_overflow_error
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
 logging.getLogger("claude_agent_sdk._internal.transport.subprocess_cli").setLevel(logging.WARNING)
+
+_LOCAL_VERIFY_MCP_SERVER_NAME = "local_verify"
+_RUN_ON_USERS_MACHINE_TOOL_NAME = "run_on_users_machine"
 
 
 class ClaudeEngineer(BaseEngineer):
@@ -55,6 +62,120 @@ class ClaudeEngineer(BaseEngineer):
 
         # Auto-approve all other tools
         return PermissionResultAllow(updated_input=input_data)
+
+    def _get_codegen_instructions(self) -> str:
+        """Appends RUN_ON_USERS_MACHINE_INSTRUCTION only when this run is
+        configured for local verification (self.local_verify is not None)
+        and isn't docs mode (there's no client to run in docs mode) — zero
+        change to the base instructions otherwise.
+        """
+        base = super()._get_codegen_instructions()
+        if self.local_verify is not None and self.output_mode != "docs":
+            return base + RUN_ON_USERS_MACHINE_INSTRUCTION
+        return base
+
+    def _build_local_exec_tool(self):
+        """Builds the `run_on_users_machine` SDK tool for this run's
+        local_verify config. Each call gathers the client file fresh off
+        disk (Phase 1: a single file, Python-only — see the
+        local-verification-agent plan for the multi-file generalization
+        planned for later languages), dispatches it to route-reveal's
+        job-scoped internal-callback endpoints, and polls for a result.
+
+        Deliberately no dedup/once-only guard, unlike report_client_verified
+        — RUN_ON_USERS_MACHINE_INSTRUCTION explicitly tells the agent it can
+        call this repeatedly while iterating, so every call must actually
+        dispatch and wait, not just the first.
+        """
+        config = self.local_verify
+
+        @tool(
+            _RUN_ON_USERS_MACHINE_TOOL_NAME,
+            "Run the current client code on the user's own paired machine (which can reach "
+            "the target when this session's Bash can't) and return its stdout/stderr/exit "
+            "code. Safe to call again after each fix while iterating.",
+            {},
+        )
+        async def run_on_users_machine(args: dict[str, Any]) -> dict[str, Any]:
+            client_filename = self._get_client_filename()
+            client_path = self.scripts_dir / client_filename
+            if not client_path.exists():
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"No {client_filename} exists yet at {client_path} — write it first, then call this tool.",
+                        }
+                    ],
+                    "is_error": True,
+                }
+            files = {client_filename: client_path.read_text(encoding="utf-8", errors="replace")}
+            headers = {"Authorization": f"Bearer {config.callback_token}"}
+
+            try:
+                create_resp = requests.post(
+                    f"{config.callback_url}/commands",
+                    json={
+                        "output_language": self.output_language,
+                        "entrypoint_filename": client_filename,
+                        "files": files,
+                        "timeout_seconds": config.command_timeout_seconds,
+                    },
+                    headers=headers,
+                    timeout=15,
+                )
+                create_resp.raise_for_status()
+                command_id = create_resp.json()["id"]
+            except requests.RequestException as e:
+                return {
+                    "content": [{"type": "text", "text": f"Could not reach the paired local machine to dispatch this: {e}"}],
+                    "is_error": True,
+                }
+
+            deadline = time.monotonic() + config.wait_timeout_seconds
+            while time.monotonic() < deadline:
+                await asyncio.sleep(config.poll_interval_seconds)
+                try:
+                    poll_resp = requests.get(
+                        f"{config.callback_url}/commands/{command_id}", headers=headers, timeout=15
+                    )
+                    poll_resp.raise_for_status()
+                    result = poll_resp.json()
+                except requests.RequestException as e:
+                    return {
+                        "content": [
+                            {"type": "text", "text": f"Lost contact with the paired local machine while waiting for a result: {e}"}
+                        ],
+                        "is_error": True,
+                    }
+
+                status = result.get("status")
+                if status in ("succeeded", "failed", "timed_out", "cancelled"):
+                    text = (
+                        f"Ran on the user's paired machine — status: {status}, exit code: {result.get('exit_code')}\n"
+                        f"stdout:\n{result.get('stdout') or ''}\n\nstderr:\n{result.get('stderr') or ''}"
+                    )
+                    return {"content": [{"type": "text", "text": text}], "is_error": status != "succeeded"}
+
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"No result from the user's paired machine within {config.wait_timeout_seconds:.0f}s — "
+                            "it may be offline or unreachable. This is an external constraint you can't fix from "
+                            "here: don't retry this in a loop, and don't fall back to testing via Bash (it can't "
+                            "reach this target either). Note it in your summary and continue."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+
+        return run_on_users_machine
+
+    def _build_local_exec_mcp_server(self):
+        return create_sdk_mcp_server(name=_LOCAL_VERIFY_MCP_SERVER_NAME, tools=[self._build_local_exec_tool()])
 
     _USAGE_ACCUMULATE_KEYS = {
         "input_tokens",
@@ -181,6 +302,11 @@ class ClaudeEngineer(BaseEngineer):
             model=self.model,
             env=build_sdk_env(),
             stderr=self._handle_cli_stderr,
+            mcp_servers=(
+                {_LOCAL_VERIFY_MCP_SERVER_NAME: self._build_local_exec_mcp_server()}
+                if self.local_verify is not None
+                else {}
+            ),
         )
 
         last_result: dict[str, Any] | None = None
@@ -249,6 +375,7 @@ def run_reverse_engineering(
     output_mode: str = "client",
     interactive: bool = True,
     json_event_sink: Any = None,
+    local_verify: LocalVerifyConfig | None = None,
 ) -> dict[str, Any] | None:
     """Run reverse engineering with the specified SDK.
 
@@ -264,6 +391,10 @@ def run_reverse_engineering(
         is_fresh: Whether to start fresh (ignore previous scripts)
         output_language: Target language - "python", "javascript", "typescript", "go", "java", "csharp", "php", "ruby", or "c"
         output_mode: Output mode - "client" for API client code, "docs" for OpenAPI specification
+        local_verify: Only honored for sdk="claude" (see ClaudeEngineer) — the other SDK
+            backends don't yet register the run_on_users_machine tool, so this is silently
+            ignored for them rather than raising, matching this function's own existing
+            per-SDK feature-support pattern (e.g. cursor_model/opencode_provider).
     """
     if sdk == "opencode":
         from .opencode_engineer import OpenCodeEngineer
@@ -340,6 +471,7 @@ def run_reverse_engineering(
             output_language=output_language,
             output_mode=output_mode,
             interactive=interactive,
+            local_verify=local_verify,
         )
 
     if json_event_sink is not None:
