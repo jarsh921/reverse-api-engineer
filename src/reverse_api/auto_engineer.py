@@ -216,7 +216,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         if self.agent_provider == "agent-browser":
             options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
-                mcp_servers={self._VERIFICATION_MCP_SERVER_NAME: verification_server},
+                mcp_servers={"verification": verification_server},
                 # allowed_tools is an explicit allow-list here (unlike the
                 # else branch below), so the verification tool needs its
                 # SDK-qualified name added alongside it — confirmed live
@@ -225,7 +225,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 # "mcp__chrome-devtools__navigate_page").
                 allowed_tools=[
                     *allowed_tools_agent_browser_agent_mode(),
-                    f"mcp__{self._VERIFICATION_MCP_SERVER_NAME}__{self._REPORT_CLIENT_VERIFIED_TOOL_NAME}",
+                    "mcp__verification__report_client_verified",
                 ],
                 permission_mode="bypassPermissions",
                 can_use_tool=self._handle_tool_permission,
@@ -238,7 +238,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
             mcp_name, mcp_config = self._get_mcp_config()
             options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
-                mcp_servers={mcp_name: mcp_config, self._VERIFICATION_MCP_SERVER_NAME: verification_server},
+                mcp_servers={mcp_name: mcp_config, "verification": verification_server},
                 permission_mode="bypassPermissions",
                 can_use_tool=self._handle_tool_permission,
                 cwd=str(self.scripts_dir.parent.parent),

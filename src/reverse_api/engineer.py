@@ -59,17 +59,6 @@ class ClaudeEngineer(BaseEngineer):
         # Auto-approve all other tools
         return PermissionResultAllow(updated_input=input_data)
 
-    # The tool name Claude actually sees is namespaced by the SDK as
-    # "mcp__<server_name>__<tool_name>" (confirmed live against real
-    # chrome-devtools-mcp tool-use blocks, which show up the same way) —
-    # kept here as a constant since both the tool's own registration and
-    # base_engineer.py's REPORT_CLIENT_VERIFIED_INSTRUCTION need the bare
-    # name, and this file additionally needs the qualified form wherever
-    # an explicit allowed_tools list is used (see auto_engineer.py's
-    # agent-browser branch).
-    _VERIFICATION_MCP_SERVER_NAME = "verification"
-    _REPORT_CLIENT_VERIFIED_TOOL_NAME = "report_client_verified"
-
     def _build_verification_tool(self):
         """The report_client_verified SdkMcpTool itself (handler + schema),
         separate from _build_verification_mcp_server's server-wrapping step
@@ -106,7 +95,7 @@ class ClaudeEngineer(BaseEngineer):
         already_reported = False
 
         @tool(
-            self._REPORT_CLIENT_VERIFIED_TOOL_NAME,
+            "report_client_verified",
             "Call this exactly once, after you have actually run the generated "
             "client live against the target and personally confirmed it works. "
             "Do not call this speculatively, before a real run, or more than "
@@ -140,7 +129,7 @@ class ClaudeEngineer(BaseEngineer):
         """In-process MCP server exposing report_client_verified — see
         _build_verification_tool's own docstring for the full reasoning."""
         return create_sdk_mcp_server(
-            name=self._VERIFICATION_MCP_SERVER_NAME, tools=[self._build_verification_tool()]
+            name="verification", tools=[self._build_verification_tool()]
         )
 
     def _get_codegen_instructions(self) -> str:
@@ -291,7 +280,7 @@ class ClaudeEngineer(BaseEngineer):
             model=self.model,
             env=build_sdk_env(),
             stderr=self._handle_cli_stderr,
-            mcp_servers={self._VERIFICATION_MCP_SERVER_NAME: self._build_verification_mcp_server()},
+            mcp_servers={"verification": self._build_verification_mcp_server()},
         )
 
         last_result: dict[str, Any] | None = None
